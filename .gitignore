@@ -1,0 +1,54 @@
+# C++ build directories
+build/
+build-*/
+cmake-build-*/
+out/
+bin/
+lib/
+obj/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+install_manifest.txt
+Makefile
+
+# Generated binaries/libraries
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.idb
+
+# Debug/profiling artifacts
+*.dSYM/
+*.stackdump
+*.gcda
+*.gcno
+*.gcov
+*.prof
+*.profraw
+*.profdata
+
+# IDE/editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
