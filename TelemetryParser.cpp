@@ -97,8 +97,8 @@ std::optional<std::vector<std::uint8_t>> RadiationTestTelemetry::TelemetryParser
                 std::vector crcData(frame.begin() + 3, frame.begin() + 3 + Length);
 
                 const auto CRC_Calc = crc16_CCITT(crcData);
-                const auto CRC_ReceivedLo = static_cast<std::uint16_t>(frame[FrameSize-2]);
-                const auto CRC_ReceivedHi = static_cast<std::uint16_t>(frame[FrameSize-1] << 8);
+                const auto CRC_ReceivedLo = static_cast<std::uint16_t>(frame[FrameSize - 2]);
+                const auto CRC_ReceivedHi = static_cast<std::uint16_t>(frame[FrameSize - 1] << 8);
                 const auto CRC_Received = static_cast<std::uint16_t>(CRC_ReceivedLo | CRC_ReceivedHi);
 
                 if (CRC_Received != CRC_Calc) {
@@ -116,6 +116,48 @@ std::optional<std::vector<std::uint8_t>> RadiationTestTelemetry::TelemetryParser
         return std::nullopt;
 }
 
-bool RadiationTestTelemetry::TelemetryParser::decodePayload44(std::span<std::uint8_t> payload, Telemetry44& parametersMonitor) {
+std::uint32_t RadiationTestTelemetry::TelemetryParser::readU32LE(std::span<std::uint8_t> bytes) {
+        return static_cast<std::uint32_t>(bytes[0]) | (static_cast<std::uint32_t>(bytes[1]) << 8) |
+                (static_cast<std::uint32_t>(bytes[2]) << 16) | (static_cast<std::uint32_t>(bytes[3]) << 24);
+}
 
+std::int32_t RadiationTestTelemetry::TelemetryParser::readI32LE(std::span<std::uint8_t> bytes) {
+        return static_cast<std::int32_t>(readU32LE(bytes));
+}
+
+std::optional<RadiationTestTelemetry::Telemetry44>
+RadiationTestTelemetry::TelemetryParser::decodePayload44(std::span<std::uint8_t> payload) const {
+        using namespace PayloadDecodingConstants;
+
+        if (payload.size() < 6)
+                return std::nullopt;
+
+        const auto Length = buffer[2];
+        const auto PayloadSize = static_cast<std::size_t>(Length - 1);
+
+        if (PayloadSize != PAYLOAD_44_SIZE)
+                return std::nullopt;
+
+        static constexpr std::size_t PayloadStart = 4;
+        const std::size_t PayloadEnd = PayloadStart + PayloadSize;
+
+        if (payload.size() < PayloadEnd + 2)
+                return std::nullopt;
+
+        const std::span PayloadSpan(payload.begin() + PayloadStart, payload.begin() + PayloadEnd);
+
+        Telemetry44 telemetry {};
+        telemetry.seq = readU32LE(PayloadSpan.subspan(0, 4));
+        telemetry.t_us = readU32LE(PayloadSpan.subspan(4, 4));
+        telemetry.ia_mA = readI32LE(PayloadSpan.subspan(8, 4));
+        telemetry.ib_mA = readI32LE(PayloadSpan.subspan(12, 4));
+        telemetry.id_mA = readI32LE(PayloadSpan.subspan(16, 4));
+        telemetry.iq_mA = readI32LE(PayloadSpan.subspan(20, 4));
+        telemetry.id_ref_mA = readI32LE(PayloadSpan.subspan(24, 4));
+        telemetry.iq_ref_mA = readI32LE(PayloadSpan.subspan(28, 4));
+        telemetry.angle_raw = readU32LE(PayloadSpan.subspan(32, 4));
+        telemetry.omega_mrad_s = readI32LE(PayloadSpan.subspan(36, 4));
+        telemetry.encoder_error_code = readU32LE(PayloadSpan.subspan(40, 4));
+
+        return telemetry;
 }

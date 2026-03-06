@@ -67,19 +67,6 @@ public:
          */
         TelemetryParser(boost::asio::io_context& ioContext, const std::string& portName, std::uint32_t baudRate);
 
-private:
-        /**
-         * The serial port object
-         *
-         * @note Initialized fully in constructor member initializer list
-         */
-        boost::asio::serial_port serialPort;
-
-        /**
-         * A buffer for storing the received data
-         */
-        std::vector<std::uint8_t> buffer{};
-
         using seconds_t = float;
 
         /**
@@ -100,16 +87,28 @@ private:
          * @param timeoutSeconds A timeout for the receiving data
          * @return
          */
-        std::optional<std::vector<std::uint8_t>> readFrame(seconds_t timeoutSeconds = 2.0f);
+        [[nodiscard]] std::optional<std::vector<std::uint8_t>> readFrame(seconds_t timeoutSeconds = 2.0f);
 
         /**
-         * Function that decoded the payload that is given to it as argument
+         * Function that decodes an already verified payload that is given to it as argument
          *
          * @param payload The telemetry payload (e.g. 44 bytes)
-         * @param parametersMonitor
          * @return
          */
-        bool decodePayload44(std::span<std::uint8_t> payload, Telemetry44& parametersMonitor);
+        [[nodiscard]] std::optional<Telemetry44> decodePayload44(std::span<std::uint8_t> payload) const;
+
+private:
+        /**
+         * The serial port object
+         *
+         * @note Initialized fully in constructor member initializer list
+         */
+        boost::asio::serial_port serialPort;
+
+        /**
+         * A buffer for storing the received data
+         */
+        std::vector<std::uint8_t> buffer{};
 
         /**
          * Function that reads some bytes from serial and appends them to the internal buffer
@@ -124,6 +123,10 @@ private:
          * @return
          */
         static std::uint16_t crc16_CCITT(std::span<std::uint8_t> data, std::uint16_t crc = 0xFFFF);
+
+        static std::uint32_t readU32LE(std::span<std::uint8_t> bytes);
+
+        static std::int32_t readI32LE(std::span<std::uint8_t> bytes);
 };
 
 } // namespace RadiationTestTelemetry
