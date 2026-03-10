@@ -1,0 +1,4 @@
+pyserial
+pyvisa-py
+robotframework
+pytz
