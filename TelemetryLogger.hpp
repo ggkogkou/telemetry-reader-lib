@@ -37,7 +37,7 @@
 class TelemetryLogger {
 public:
         /**
-         * Contructor of the class
+         * Constructor of the class
          * @param csvPath The path to the CSV file where the logs will be written in
          */
         explicit TelemetryLogger(const std::string& csvPath);

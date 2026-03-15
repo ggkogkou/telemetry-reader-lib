@@ -38,12 +38,31 @@ def cpp_stdout_reader(proc, command_queue, stop_event):
         print(f"✗ stdout reader error: {e}")
 
 
+def cpp_stderr_reader(proc, stop_event):
+    try:
+        while not stop_event.is_set():
+            line = proc.stderr.readline()
+            if not line:
+                break
+
+            line = line.strip()
+            if not line:
+                continue
+
+            print(line)
+    except Exception as e:
+        print(f"stderr reader error: {e}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--collector-exe", required=True, help="Path to foc_tlm_parser.exe")
     ap.add_argument("--telemetry-port", required=True, help="Serial port for telemetry collector, e.g. COM5")
     ap.add_argument("--telemetry-baud", type=int, default=460800)
     ap.add_argument("--telemetry-csv", default="telemetry.csv")
+    ap.add_argument("--resolver-port", help="Serial port for resolver collector, e.g. COM6")
+    ap.add_argument("--resolver-baud", type=int, default=460800)
+    ap.add_argument("--resolver-csv", default="resolver.csv")
     ap.add_argument("--telemetry-timeout-s", type=float, default=20.0)
     ap.add_argument("--log-dir", default="./logs")
     ap.add_argument("--power-off-s", type=float, default=5.0)
@@ -52,14 +71,22 @@ def main() -> int:
 
     Path(args.log_dir).mkdir(parents=True, exist_ok=True)
     telemetry_csv_path = os.path.join(args.log_dir, args.telemetry_csv)
+    resolver_csv_path = os.path.join(args.log_dir, args.resolver_csv)
 
     collector_cmd = [
         args.collector_exe,
-        "--port", args.telemetry_port,
-        "--baud", str(args.telemetry_baud),
-        "--csv", telemetry_csv_path,
+        "--telemetry-port", args.telemetry_port,
+        "--telemetry-baud", str(args.telemetry_baud),
+        "--telemetry-csv", telemetry_csv_path,
         "--watchdog-timeout-s", str(args.telemetry_timeout_s),
     ]
+
+    if args.resolver_port:
+        collector_cmd.extend([
+            "--resolver-port", args.resolver_port,
+            "--resolver-baud", str(args.resolver_baud),
+            "--resolver-csv", resolver_csv_path,
+        ])
 
     print("=== Starting C++ telemetry collector ===")
     print(" ".join(collector_cmd))
@@ -67,7 +94,10 @@ def main() -> int:
     collector_proc = subprocess.Popen(
         collector_cmd,
         stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
     )
 
@@ -80,6 +110,13 @@ def main() -> int:
         daemon=True,
     )
     stdout_thread.start()
+
+    stderr_thread = threading.Thread(
+        target=cpp_stderr_reader,
+        args=(collector_proc, stop_event),
+        daemon=True,
+    )
+    stderr_thread.start()
 
     PSU_ADDR = "TCPIP::192.168.0.160"
 
@@ -284,6 +321,8 @@ def main() -> int:
         print(f"Duration: {elapsed:.1f} seconds")
         print(f"Sample rate: {sample_count / elapsed:.2f} Hz" if elapsed > 0 else "Sample rate: N/A")
         print(f"Telemetry CSV: {telemetry_csv_path}")
+        if args.resolver_port:
+            print(f"Resolver CSV: {resolver_csv_path}")
         print("\n✓ All cleanup completed successfully")
 
     except Exception as e:

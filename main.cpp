@@ -18,26 +18,36 @@
 
 /**
  * @file   main.cpp
- * @brief  The main() application entrance for a telemetry parser and logger tool that is used along with the FOC firmware
- * [here](https://gitlab.cern.ch/smm-rme/radiation-tolerant-systems/motor-driver-systems/field-oriented-control-samd21)
+ * @brief  The main() application entrance for a telemetry parser and logger tool
  * @author Georgios Gkogkou <ggkogkou125@gmail.com>
  */
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 
+#include "AD2S12101.hpp"
+#include "ResolverLogger.hpp"
 #include "TelemetryLogger.hpp"
 #include "TelemetryParser.hpp"
 
 int main(int argc, char* argv[]) {
-        std::string portName;
-        std::uint32_t baudRate = 460800;
+        std::string telemetryPortName;
+        std::uint32_t telemetryBaudRate = 460800;
+        std::string telemetryCsvPath;
+
+        std::string resolverPortName;
+        std::uint32_t resolverBaudRate = 460800;
+        std::string resolverCsvPath;
+
         float watchdogTimeoutSeconds = 0.0f;
-        std::string csvPath;
 
         for (int i = 1; i < argc; ++i) {
                 const std::string arg = argv[i];
@@ -46,13 +56,41 @@ int main(int argc, char* argv[]) {
                         if (i + 1 >= argc)
                                 return 1;
 
-                        portName = argv[++i];
+                        telemetryPortName = argv[++i];
+                } else if (arg == "--telemetry-port") {
+                        if (i + 1 >= argc)
+                                return 1;
+
+                        telemetryPortName = argv[++i];
                 } else if (arg == "--baud") {
                         if (i + 1 >= argc)
                                 return 1;
 
                         try {
-                                baudRate = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+                                telemetryBaudRate = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+                        } catch (...) {
+                                return 1;
+                        }
+                } else if (arg == "--telemetry-baud") {
+                        if (i + 1 >= argc)
+                                return 1;
+
+                        try {
+                                telemetryBaudRate = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+                        } catch (...) {
+                                return 1;
+                        }
+                } else if (arg == "--resolver-port") {
+                        if (i + 1 >= argc)
+                                return 1;
+
+                        resolverPortName = argv[++i];
+                } else if (arg == "--resolver-baud") {
+                        if (i + 1 >= argc)
+                                return 1;
+
+                        try {
+                                resolverBaudRate = static_cast<std::uint32_t>(std::stoul(argv[++i]));
                         } catch (...) {
                                 return 1;
                         }
@@ -68,11 +106,16 @@ int main(int argc, char* argv[]) {
                         } catch (...) {
                                 return 1;
                         }
-                } else if (arg == "--csv") {
+                } else if (arg == "--csv" || arg == "--telemetry-csv") {
                         if (i + 1 >= argc)
                                 return 1;
 
-                        csvPath = argv[++i];
+                        telemetryCsvPath = argv[++i];
+                } else if (arg == "--resolver-csv") {
+                        if (i + 1 >= argc)
+                                return 1;
+
+                        resolverCsvPath = argv[++i];
                 } else if (arg == "--help" || arg == "-h") {
                         return 0;
                 } else {
@@ -80,64 +123,180 @@ int main(int argc, char* argv[]) {
                 }
         }
 
-        if (portName.empty())
+        if (telemetryPortName.empty() && resolverPortName.empty())
+                return 1;
+
+        if (!telemetryCsvPath.empty() && telemetryPortName.empty())
+                return 1;
+
+        if (!resolverCsvPath.empty() && resolverPortName.empty())
                 return 1;
 
         try {
                 boost::asio::io_context io;
-                RadiationTestTelemetry::TelemetryParser parser(io, portName, baudRate);
+                std::optional<RadiationTestTelemetry::TelemetryParser> telemetryParser;
+                if (!telemetryPortName.empty())
+                        telemetryParser.emplace(io, telemetryPortName, telemetryBaudRate);
 
-                std::optional<TelemetryLogger> logger;
-                if (!csvPath.empty())
-                        logger.emplace(csvPath);
+                const bool telemetryEnabled = telemetryParser.has_value();
+
+                std::optional<AD2S12101> resolver;
+                if (!resolverPortName.empty()) {
+                        resolver.emplace(io, resolverPortName, resolverBaudRate);
+                        resolver->initDevice();
+                }
+
+                std::optional<TelemetryLogger> telemetryLogger;
+                if (!telemetryCsvPath.empty())
+                        telemetryLogger.emplace(telemetryCsvPath);
+
+                std::optional<ResolverLogger> resolverLogger;
+                if (!resolverCsvPath.empty())
+                        resolverLogger.emplace(resolverCsvPath);
 
                 using steadyClock_t = std::chrono::steady_clock;
                 using systemClock_t = std::chrono::system_clock;
+                constexpr auto resolverPollingInterval = std::chrono::milliseconds(50);
 
-                const auto watchdogTimeout = std::chrono::duration<float>(watchdogTimeoutSeconds);
+                std::atomic<bool> stopRequested{false};
+                std::atomic<bool> telemetryReaderFailed{false};
+                std::atomic<bool> resolverReaderFailed{false};
 
+                std::mutex telemetryStateMutex;
                 auto lastValidTelemetryTime = steadyClock_t::now();
                 bool powerCycleAlreadyRequested = false;
 
-                while (true) {
-                        auto frame = parser.readFrame(0.2f);
-                        const auto nowSteady = steadyClock_t::now();
+                const auto watchdogTimeout = std::chrono::duration<float>(watchdogTimeoutSeconds);
 
-                        if (frame.has_value()) {
-                                auto telemetry = parser.decodePayload44(*frame);
+                std::thread telemetryReaderThread([&]() {
+                        try {
+                                while (!stopRequested.load()) {
+                                        if (!telemetryParser.has_value()) {
+                                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                                                continue;
+                                        }
 
-                                if (telemetry.has_value()) {
-                                        lastValidTelemetryTime = nowSteady;
+                                        auto frame = telemetryParser->readFrame(0.2f);
 
-                                        if (logger) {
+                                        if (!frame.has_value())
+                                                continue;
+
+                                        auto telemetry = telemetryParser->decodePayload44(*frame);
+                                        if (!telemetry.has_value())
+                                                continue;
+
+                                        bool emitRecovered = false;
+
+                                        {
+                                                std::lock_guard<std::mutex> lock(telemetryStateMutex);
+                                                lastValidTelemetryTime = steadyClock_t::now();
+
+                                                if (powerCycleAlreadyRequested) {
+                                                        emitRecovered = true;
+                                                        powerCycleAlreadyRequested = false;
+                                                }
+                                        }
+
+                                        if (telemetryLogger) {
                                                 const auto nowUnix = systemClock_t::now();
                                                 const double tsUnix =
                                                         std::chrono::duration<double>(nowUnix.time_since_epoch()).count();
 
-                                                logger->log(tsUnix, *telemetry);
+                                                telemetryLogger->log(tsUnix, *telemetry);
                                         }
 
-                                        if (powerCycleAlreadyRequested) {
+                                        if (emitRecovered) {
                                                 std::cout << "CMD TELEMETRY_RECOVERED\n";
                                                 std::cout.flush();
-                                                powerCycleAlreadyRequested = false;
                                         }
                                 }
+                        } catch (...) {
+                                telemetryReaderFailed.store(true);
+                                stopRequested.store(true);
                         }
+                });
 
-                        if (watchdogTimeoutSeconds > 0.0f) {
-                                const auto silence = nowSteady - lastValidTelemetryTime;
+                std::thread resolverReaderThread([&]() {
+                        try {
+                                while (!stopRequested.load()) {
+                                        if (!resolver.has_value()) {
+                                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                                                continue;
+                                        }
 
-                                if (!powerCycleAlreadyRequested && silence >= watchdogTimeout) {
-                                        const auto silenceSeconds = std::chrono::duration<float>(silence).count();
+                                        const auto positionSample = resolver->getPositionAndError();
+                                        constexpr double CountsPerRevolution = 65536.0;
+                                        constexpr double DegreesPerRevolution = 360.0;
+                                        const double positionDeg =
+                                                static_cast<double>(positionSample.position) / (CountsPerRevolution / DegreesPerRevolution);
 
+                                        if (positionSample.error == 0) {
+                                                std::cerr << "\xE2\x9C\x85 Position: " << std::fixed << std::setprecision(2)
+                                                          << positionDeg << " deg\n";
+                                        } else {
+                                                std::cerr << "Resolver error=" << static_cast<unsigned int>(positionSample.error)
+                                                          << " Position: " << std::fixed << std::setprecision(2) << positionDeg
+                                                          << " deg\n";
+                                        }
+                                        std::cerr.flush();
+
+                                        if (resolverLogger) {
+                                                const auto nowUnix = systemClock_t::now();
+                                                const double tsUnix =
+                                                        std::chrono::duration<double>(nowUnix.time_since_epoch()).count();
+
+                                                resolverLogger->log(tsUnix, positionSample);
+                                        }
+
+                                        std::this_thread::sleep_for(resolverPollingInterval);
+                                }
+                        } catch (...) {
+                                resolverReaderFailed.store(true);
+                                stopRequested.store(true);
+                        }
+                });
+
+                std::thread watchdogThread([&]() {
+                        while (!stopRequested.load()) {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+                                if (!telemetryEnabled || watchdogTimeoutSeconds <= 0.0f)
+                                        continue;
+
+                                bool shouldEmitPowerCycle = false;
+                                float silenceSeconds = 0.0f;
+
+                                {
+                                        std::lock_guard<std::mutex> lock(telemetryStateMutex);
+
+                                        const auto now = steadyClock_t::now();
+                                        const auto silence = now - lastValidTelemetryTime;
+
+                                        if (!powerCycleAlreadyRequested && silence >= watchdogTimeout) {
+                                                powerCycleAlreadyRequested = true;
+                                                shouldEmitPowerCycle = true;
+                                                silenceSeconds = std::chrono::duration<float>(silence).count();
+                                        }
+                                }
+
+                                if (shouldEmitPowerCycle) {
                                         std::cout << "CMD POWER_CYCLE reason=telemetry_timeout silence_s=" << silenceSeconds << '\n';
                                         std::cout.flush();
-
-                                        powerCycleAlreadyRequested = true;
                                 }
                         }
+                });
+
+                while (!stopRequested.load()) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(250));
                 }
+
+                watchdogThread.join();
+                telemetryReaderThread.join();
+                resolverReaderThread.join();
+
+                if (telemetryReaderFailed.load() || resolverReaderFailed.load())
+                        return 1;
+
         } catch (...) {
                 return 1;
         }
