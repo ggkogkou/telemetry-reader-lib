@@ -499,4 +499,4 @@ if __name__ == "__main__":
                 continue
 
             vel = chip.get_velocity()
-            print(f"✅ POS {pos:7d} = {pos_deg:>9.2f}°\tvelocity {vel:2d}")
+            print(f"✅ POS {pos:7d} = {pos_deg:>9.2f}°")

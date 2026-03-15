@@ -10,12 +10,22 @@ add_executable(foc_tlm_parser
         main.cpp
         TelemetryParser.cpp
         TelemetryLogger.cpp
+        AD2S12101.cpp
+        ResolverLogger.cpp
 )
 
-target_link_libraries(foc_tlm_parser PRIVATE Boost::asio)
-target_include_directories(foc_tlm_parser PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(foc_tlm_parser PRIVATE
+        Boost::asio
+        ws2_32
+)
 
-target_compile_definitions(foc_tlm_parser PRIVATE _WIN32_WINNT=0x0A00)
+target_include_directories(foc_tlm_parser PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_compile_definitions(foc_tlm_parser PRIVATE
+        _WIN32_WINNT=0x0A00
+)
 
 if (MSVC)
     target_compile_options(foc_tlm_parser PRIVATE
